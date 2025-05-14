@@ -8,6 +8,46 @@ export class GameEngine {
         this.level = 1;
         this.gameOver = false;
         this.success = false;
+
+        // Initialize displays first
+        this.powerTimer = {
+            x: 20,
+            y: 40,
+            width: 200,
+            height: 30
+        };
+
+        this.powerLegend = {
+            x: 20,
+            y: this.canvas.height - 90,
+            width: 150,
+            height: 70,
+            visible: true
+        };
+
+        this.gameOverDisplay = {
+            visible: false,
+            x: this.canvas.width / 2,
+            y: this.canvas.height / 2,
+            width: 300,
+            height: 200,
+            alpha: 0,
+            targetAlpha: 0,
+            fadeSpeed: 0.05,
+            displayTime: 2000,
+            startTime: 0,
+            scale: 1.2
+        };
+
+        // Initialize player power state
+        this.playerPower = {
+            active: false,
+            type: null,
+            endTime: 0,
+            timer: null,
+            hasPower: false,
+            affectedShapes: new Set() // Track shapes that have been affected by the power
+        };
         
         // Player properties
         this.player = {
@@ -19,7 +59,7 @@ export class GameEngine {
             speed: 8,
             infected: false,
             infectionProgress: 0,
-            trail: [] // For motion trail effect
+            trail: []
         };
 
         // Shape types with their properties
@@ -41,9 +81,58 @@ export class GameEngine {
             { base: '#008000', light: '#66B866' }
         ];
 
-        // Initialize obstacles
-        this.obstacles = this.createInitialObstacles();
-        
+        // Superpower properties
+        this.superPowers = {
+            'star': {
+                name: 'Shape Shifter',
+                duration: 5000,
+                color: '#FFD700', // Gold
+                effect: (shape) => {
+                    const now = Date.now();
+                    if (!this.shapeShifterCooldown.active || 
+                        now - this.shapeShifterCooldown.lastChange >= this.shapeShifterCooldown.cooldownTime) {
+                        const newShape = this.shapeTypes[Math.floor(Math.random() * this.shapeTypes.length)];
+                        shape.shape = newShape;
+                        this.shapeShifterCooldown.lastChange = now;
+                        this.shapeShifterCooldown.active = true;
+                    }
+                }
+            },
+            'star_eliminator': {
+                name: 'Shape Eliminator',
+                duration: 2000,
+                color: '#FF69B4', // Pink
+                effect: (shape) => {
+                    // Remove the shape from the obstacles array
+                    const index = this.obstacles.indexOf(shape);
+                    if (index > -1) {
+                        this.obstacles.splice(index, 1);
+                    }
+                }
+            },
+            'star_reducer': {
+                name: 'Size Reducer',
+                duration: 3000,
+                color: '#00FFFF', // Cyan
+                effect: (shape) => {
+                    shape.size *= 0.9;
+                    shape.size = Math.max(shape.size, this.minShapeSize);
+                }
+            }
+        };
+
+        // Add physics properties
+        this.elasticity = 0.8; // Bounce factor
+        this.friction = 0.99; // Friction factor
+
+        // Add entrance protection properties
+        this.entranceProtectionRadius = 150; // Protection zone radius
+        this.entranceProtectionForce = 0.8; // Force to push obstacles away
+
+        // Add shrink factor and minimum size for shapes
+        this.shrinkFactor = 0.95; // Shapes will shrink to 95% of their size on collision
+        this.minShapeSize = this.player.radius * 0.5; // Minimum size is half of player's radius
+
         // Game boundaries with fancy entrance and exit
         this.entrance = {
             x: 0,
@@ -63,6 +152,9 @@ export class GameEngine {
             lightColor: '#B0E0E6'
         };
 
+        // Initialize obstacles
+        this.obstacles = this.createInitialObstacles();
+
         // Particle effects
         this.particles = [];
         
@@ -81,23 +173,28 @@ export class GameEngine {
         this.lastPlayerPosition = { x: 0, y: 0 };
         this.positionChangeThreshold = 5; // Minimum distance to consider movement
 
-        // Add physics properties
-        this.elasticity = 0.8; // Bounce factor
-        this.friction = 0.99; // Friction factor
-
-        // Add entrance protection properties
-        this.entranceProtectionRadius = 150; // Protection zone radius
-        this.entranceProtectionForce = 0.8; // Force to push obstacles away
+        // Add cooldown for shape shifter
+        this.shapeShifterCooldown = {
+            active: false,
+            lastChange: 0,
+            cooldownTime: 1000 // 1 second cooldown
+        };
     }
 
     createInitialObstacles() {
-        return [{
-            x: this.canvas.width / 2,
-            y: this.canvas.height / 2,
+        const obstacles = [];
+        
+        // Start with one regular shape
+        const regularShape = this.shapeTypes[Math.floor(Math.random() * this.shapeTypes.length)];
+        const colorIndex = Math.floor(Math.random() * this.obstacleColors.length);
+        
+        const shape = {
+            x: Math.random() * (this.canvas.width - 100) + 50,
+            y: Math.random() * (this.canvas.height - 100) + 50,
             size: 40,
-            color: this.obstacleColors[0].base,
-            lightColor: this.obstacleColors[0].light,
-            shape: this.shapeTypes[0],
+            color: this.obstacleColors[colorIndex].base,
+            lightColor: this.obstacleColors[colorIndex].light,
+            shape: regularShape,
             speedX: 0,
             speedY: 0,
             baseSpeed: 2,
@@ -105,12 +202,44 @@ export class GameEngine {
             blindTimer: 0,
             blindDuration: 0,
             lastBlindTime: 0,
-            rotation: 0,
+            rotation: Math.random() * Math.PI * 2,
             rotationSpeed: (Math.random() - 0.5) * 0.02,
             blindChance: 0.3,
             blindDurationRange: { min: 1000, max: 3000 },
             chaseAccuracy: 0.5 + Math.random() * 0.5
-        }];
+        };
+        obstacles.push(shape);
+        
+        // 30% chance to add a superpower shape
+        if (Math.random() < 0.3) {
+            const superPowerTypes = ['star', 'star_eliminator', 'star_reducer'];
+            const powerType = superPowerTypes[Math.floor(Math.random() * superPowerTypes.length)];
+            const colorIndex = Math.floor(Math.random() * this.obstacleColors.length);
+            
+            const superShape = {
+                x: Math.random() * (this.canvas.width - 100) + 50,
+                y: Math.random() * (this.canvas.height - 100) + 50,
+                size: 40,
+                color: this.obstacleColors[colorIndex].base,
+                lightColor: this.obstacleColors[colorIndex].light,
+                shape: powerType,
+                speedX: 0,
+                speedY: 0,
+                baseSpeed: 2,
+                isBlind: false,
+                blindTimer: 0,
+                blindDuration: 0,
+                lastBlindTime: 0,
+                rotation: Math.random() * Math.PI * 2,
+                rotationSpeed: (Math.random() - 0.5) * 0.02,
+                blindChance: 0.3,
+                blindDurationRange: { min: 1000, max: 3000 },
+                chaseAccuracy: 0.5 + Math.random() * 0.5
+            };
+            obstacles.push(superShape);
+        }
+        
+        return obstacles;
     }
 
     setupEventListeners() {
@@ -348,6 +477,13 @@ export class GameEngine {
             if (this.checkCollision(this.player, obstacle)) {
                 this.handleCollision(obstacle);
             }
+
+            // Apply power effect if player has active power
+            if (this.playerPower.active && 
+                this.checkCollision(this.player, obstacle)) {
+                this.superPowers[this.playerPower.type].effect(obstacle);
+                this.createParticles(obstacle.x, obstacle.y, this.superPowers[this.playerPower.type].color);
+            }
         });
     }
 
@@ -361,17 +497,55 @@ export class GameEngine {
     }
 
     handleCollision(obstacle) {
-        // Only trigger game over if the player is not in the entrance protection zone
+        // Check if player is in entrance protection zone
         const dxToEntrance = this.player.x - this.entrance.x;
         const dyToEntrance = this.player.y - (this.entrance.y + this.entrance.height/2);
         const distanceToEntrance = Math.sqrt(dxToEntrance * dxToEntrance + dyToEntrance * dyToEntrance);
 
         if (distanceToEntrance > this.entranceProtectionRadius) {
-            this.player.infected = true;
-            this.createParticles(this.player.x, this.player.y, obstacle.color);
-            this.gameOver = true;
-            this.callbacks.onGameOver();
+            // Check if obstacle has a superpower and player doesn't have power
+            if (this.superPowers[obstacle.shape] && !this.playerPower.hasPower) {
+                // Steal the power
+                this.activatePlayerPower(obstacle.shape);
+                this.createParticles(this.player.x, this.player.y, this.superPowers[obstacle.shape].color);
+                // Remove power from the shape permanently
+                obstacle.shape = this.shapeTypes[Math.floor(Math.random() * this.shapeTypes.length)];
+            } else if (!this.playerPower.active) {
+                // Normal collision - show game over display and reset player immediately
+                this.player.infected = true;
+                this.createParticles(this.player.x, this.player.y, obstacle.color);
+                this.gameOver = true;
+                
+                // Show game over display
+                this.gameOverDisplay.visible = true;
+                this.gameOverDisplay.targetAlpha = 1;
+                this.gameOverDisplay.alpha = 0;
+                this.gameOverDisplay.startTime = Date.now();
+                
+                // Reset player immediately
+                this.resetPlayer();
+            }
         }
+    }
+
+    resetPlayer() {
+        // Reset player position and state
+        this.player.x = 50;
+        this.player.y = this.canvas.height / 2;
+        this.player.infected = false;
+        this.player.infectionProgress = 0;
+        this.player.trail = [];
+        
+        // Reset game state
+        this.gameOver = false;
+        this.success = false;
+        this.particles = [];
+        this.stuckTimer = 0;
+
+        // Reset power state
+        this.deactivatePlayerPower();
+        
+        // Don't reset game over display here - let it fade out naturally
     }
 
     checkCollision(player, obstacle) {
@@ -383,52 +557,67 @@ export class GameEngine {
         let collisionRadius;
         switch (obstacle.shape) {
             case 'triangle':
-                collisionRadius = obstacle.size * 0.8; // Triangle's inscribed circle
+                // Use inscribed circle radius for triangle
+                collisionRadius = obstacle.size * 0.5;
                 break;
             case 'square':
-                collisionRadius = obstacle.size * 0.7; // Square's inscribed circle
+                // Use half of diagonal for square
+                collisionRadius = obstacle.size * 0.707;
                 break;
             case 'rectangle':
-                collisionRadius = obstacle.size * 0.6; // Rectangle's inscribed circle
+                // Use average of width and height
+                collisionRadius = obstacle.size * 1.25;
                 break;
             case 'ellipse':
-                collisionRadius = obstacle.size * 0.4; // Ellipse's average radius
+                // Use average of major and minor axes
+                collisionRadius = obstacle.size * 1.25;
                 break;
             case 'star':
-                collisionRadius = obstacle.size * 0.7; // Star's inscribed circle
+                // Use inscribed circle radius
+                collisionRadius = obstacle.size * 0.5;
                 break;
             case 'pentagon':
-                collisionRadius = obstacle.size * 0.8; // Pentagon's inscribed circle
+                // Use inscribed circle radius
+                collisionRadius = obstacle.size * 0.688;
                 break;
             case 'hexagon':
-                collisionRadius = obstacle.size * 0.85; // Hexagon's inscribed circle
+                // Use inscribed circle radius
+                collisionRadius = obstacle.size * 0.866;
                 break;
             case 'octagon':
-                collisionRadius = obstacle.size * 0.9; // Octagon's inscribed circle
+                // Use inscribed circle radius
+                collisionRadius = obstacle.size * 0.924;
                 break;
             case 'diamond':
-                collisionRadius = obstacle.size * 0.7; // Diamond's inscribed circle
+                // Use inscribed circle radius
+                collisionRadius = obstacle.size * 0.707;
                 break;
             case 'cross':
-                collisionRadius = obstacle.size * 0.5; // Cross's effective radius
+                // Use average of arms
+                collisionRadius = obstacle.size * 0.65;
                 break;
             case 'heart':
-                collisionRadius = obstacle.size * 0.6; // Heart's effective radius
+                // Use average of width and height
+                collisionRadius = obstacle.size * 0.75;
                 break;
             case 'moon':
-                collisionRadius = obstacle.size * 0.7; // Moon's effective radius
+                // Use average of outer and inner radius
+                collisionRadius = obstacle.size * 0.85;
                 break;
             case 'cloud':
-                collisionRadius = obstacle.size * 0.6; // Cloud's effective radius
+                // Use average of cloud parts
+                collisionRadius = obstacle.size * 0.6;
                 break;
             case 'lightning':
-                collisionRadius = obstacle.size * 0.5; // Lightning's effective radius
+                // Use average of width and height
+                collisionRadius = obstacle.size * 0.5;
                 break;
             case 'spiral':
-                collisionRadius = obstacle.size * 0.7; // Spiral's effective radius
+                // Use average of spiral radius
+                collisionRadius = obstacle.size * 0.6;
                 break;
             default:
-                collisionRadius = obstacle.size * 0.8; // Default fallback
+                collisionRadius = obstacle.size * 0.8;
         }
 
         // Check if the distance is less than the sum of the player's radius and the obstacle's collision radius
@@ -447,19 +636,23 @@ export class GameEngine {
     nextLevel() {
         this.level++;
         this.callbacks.onLevelChange(this.level);
-        this.resetLevel();
         
-        // Create new obstacle with random properties
+        // Keep existing shapes but remove any superpower shapes
+        this.obstacles = this.obstacles.filter(obstacle => 
+            !this.superPowers[obstacle.shape]
+        );
+        
+        // Add one new regular shape
+        const regularShape = this.shapeTypes[Math.floor(Math.random() * this.shapeTypes.length)];
         const colorIndex = Math.floor(Math.random() * this.obstacleColors.length);
-        const shapeIndex = Math.floor(Math.random() * this.shapeTypes.length);
         
         const newObstacle = {
             x: Math.random() * (this.canvas.width - 100) + 50,
             y: Math.random() * (this.canvas.height - 100) + 50,
-            size: 30 + Math.random() * 60,
+            size: Math.max(30 + Math.random() * 60, this.minShapeSize),
             color: this.obstacleColors[colorIndex].base,
             lightColor: this.obstacleColors[colorIndex].light,
-            shape: this.shapeTypes[shapeIndex],
+            shape: regularShape,
             speedX: 0,
             speedY: 0,
             baseSpeed: 2,
@@ -476,144 +669,235 @@ export class GameEngine {
             },
             chaseAccuracy: 0.3 + Math.random() * 0.7
         };
-        
         this.obstacles.push(newObstacle);
+        
+        // 30% chance to add a superpower shape
+        if (Math.random() < 0.3) {
+            const superPowerTypes = ['star', 'star_eliminator', 'star_reducer'];
+            const powerType = superPowerTypes[Math.floor(Math.random() * superPowerTypes.length)];
+            const colorIndex = Math.floor(Math.random() * this.obstacleColors.length);
+            
+            const superShape = {
+                x: Math.random() * (this.canvas.width - 100) + 50,
+                y: Math.random() * (this.canvas.height - 100) + 50,
+                size: Math.max(30 + Math.random() * 60, this.minShapeSize),
+                color: this.obstacleColors[colorIndex].base,
+                lightColor: this.obstacleColors[colorIndex].light,
+                shape: powerType,
+                speedX: 0,
+                speedY: 0,
+                baseSpeed: 2,
+                isBlind: false,
+                blindTimer: 0,
+                blindDuration: 0,
+                lastBlindTime: 0,
+                rotation: Math.random() * Math.PI * 2,
+                rotationSpeed: (Math.random() - 0.5) * 0.02,
+                blindChance: 0.2 + Math.random() * 0.2,
+                blindDurationRange: {
+                    min: 1000 + Math.random() * 1000,
+                    max: 2000 + Math.random() * 2000
+                },
+                chaseAccuracy: 0.3 + Math.random() * 0.7
+            };
+            this.obstacles.push(superShape);
+        }
+        
+        // Reset player position
+        this.resetPlayer();
     }
 
     resetLevel() {
+        // Reset player position and state
         this.player.x = 50;
         this.player.y = this.canvas.height / 2;
         this.player.infected = false;
         this.player.infectionProgress = 0;
         this.player.trail = [];
+        
+        // Reset game state
         this.gameOver = false;
         this.success = false;
         this.particles = [];
         this.stuckTimer = 0;
+
+        // Reset power state
+        this.deactivatePlayerPower();
+        
+        // Reset game over display
+        this.gameOverDisplay.visible = false;
+        this.gameOverDisplay.targetAlpha = 0;
+        this.gameOverDisplay.alpha = 0;
+
+        // Create new random initial obstacles
+        this.obstacles = this.createInitialObstacles();
     }
 
-    drawShape(ctx, obstacle) {
-        const size = obstacle.size;
+    drawShape(ctx, shape) {
         ctx.save();
-        ctx.translate(obstacle.x, obstacle.y);
-        ctx.rotate(obstacle.rotation);
+        ctx.translate(shape.x, shape.y);
+        ctx.rotate(shape.rotation);
+
+        // Draw power indicator for superpower shapes
+        if (shape.shape && this.superPowers && this.superPowers[shape.shape] && !this.playerPower.hasPower) {
+            const power = this.superPowers[shape.shape];
+            
+            // Draw outer glow with pulsing effect
+            const pulseScale = 1.3 + Math.sin(Date.now() / 200) * 0.1; // Pulsing effect
+            ctx.beginPath();
+            ctx.strokeStyle = power.color;
+            ctx.lineWidth = 4;
+            ctx.arc(0, 0, shape.size * pulseScale, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Draw power symbol based on type
+            ctx.beginPath();
+            ctx.fillStyle = power.color;
+            switch (shape.shape) {
+                case 'star':
+                    // Draw shape change symbol (circular arrows)
+                    ctx.beginPath();
+                    ctx.arc(0, 0, shape.size * 0.3, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(0, 0, shape.size * 0.2, 0, Math.PI * 2);
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(shape.size * 0.3, 0);
+                    ctx.lineTo(shape.size * 0.4, -shape.size * 0.1);
+                    ctx.lineTo(shape.size * 0.4, shape.size * 0.1);
+                    ctx.fill();
+                    break;
+                case 'star_eliminator':
+                    // Draw elimination symbol (X)
+                    ctx.beginPath();
+                    ctx.moveTo(-shape.size * 0.2, -shape.size * 0.2);
+                    ctx.lineTo(shape.size * 0.2, shape.size * 0.2);
+                    ctx.moveTo(shape.size * 0.2, -shape.size * 0.2);
+                    ctx.lineTo(-shape.size * 0.2, shape.size * 0.2);
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    break;
+                case 'star_reducer':
+                    // Draw size decrease symbol (-)
+                    ctx.beginPath();
+                    ctx.moveTo(-shape.size * 0.2, 0);
+                    ctx.lineTo(shape.size * 0.2, 0);
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    break;
+            }
+        }
+
+        // Draw the shape
+        ctx.beginPath();
+        ctx.fillStyle = shape.color;
         
-        switch (obstacle.shape) {
+        switch(shape.shape) {
             case 'triangle':
-                ctx.beginPath();
-                ctx.moveTo(0, -size);
-                ctx.lineTo(size, size);
-                ctx.lineTo(-size, size);
-                ctx.closePath();
+                ctx.moveTo(0, -shape.size);
+                ctx.lineTo(shape.size, shape.size);
+                ctx.lineTo(-shape.size, shape.size);
                 break;
             case 'square':
-                ctx.fillRect(-size/2, -size/2, size, size);
+                ctx.rect(-shape.size, -shape.size, shape.size * 2, shape.size * 2);
                 break;
             case 'rectangle':
-                ctx.fillRect(-size/2, -size/3, size, size * 2/3);
+                ctx.rect(-shape.size, -shape.size * 0.6, shape.size * 2, shape.size * 1.2);
                 break;
             case 'ellipse':
-                ctx.beginPath();
-                ctx.ellipse(0, 0, size/2, size/3, 0, 0, Math.PI * 2);
+                ctx.ellipse(0, 0, shape.size, shape.size * 0.6, 0, 0, Math.PI * 2);
                 break;
             case 'star':
-                ctx.beginPath();
+            case 'star_eliminator':
+            case 'star_reducer':
                 for (let i = 0; i < 5; i++) {
-                    const angle = (i * 4 * Math.PI) / 5;
-                    const x = Math.cos(angle) * size;
-                    const y = Math.sin(angle) * size;
+                    const angle = (i * 4 * Math.PI) / 5 - Math.PI / 2;
+                    const x = Math.cos(angle) * shape.size;
+                    const y = Math.sin(angle) * shape.size;
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 }
-                ctx.closePath();
                 break;
             case 'pentagon':
-                ctx.beginPath();
                 for (let i = 0; i < 5; i++) {
-                    const angle = (i * 2 * Math.PI) / 5;
-                    const x = Math.cos(angle) * size;
-                    const y = Math.sin(angle) * size;
+                    const angle = (i * 2 * Math.PI) / 5 - Math.PI / 2;
+                    const x = Math.cos(angle) * shape.size;
+                    const y = Math.sin(angle) * shape.size;
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 }
-                ctx.closePath();
                 break;
             case 'hexagon':
-                ctx.beginPath();
                 for (let i = 0; i < 6; i++) {
                     const angle = (i * 2 * Math.PI) / 6;
-                    const x = Math.cos(angle) * size;
-                    const y = Math.sin(angle) * size;
+                    const x = Math.cos(angle) * shape.size;
+                    const y = Math.sin(angle) * shape.size;
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 }
-                ctx.closePath();
                 break;
             case 'octagon':
-                ctx.beginPath();
                 for (let i = 0; i < 8; i++) {
                     const angle = (i * 2 * Math.PI) / 8;
-                    const x = Math.cos(angle) * size;
-                    const y = Math.sin(angle) * size;
+                    const x = Math.cos(angle) * shape.size;
+                    const y = Math.sin(angle) * shape.size;
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 }
-                ctx.closePath();
                 break;
             case 'diamond':
-                ctx.beginPath();
-                ctx.moveTo(0, -size);
-                ctx.lineTo(size, 0);
-                ctx.lineTo(0, size);
-                ctx.lineTo(-size, 0);
-                ctx.closePath();
+                ctx.moveTo(0, -shape.size);
+                ctx.lineTo(shape.size, 0);
+                ctx.lineTo(0, shape.size);
+                ctx.lineTo(-shape.size, 0);
                 break;
             case 'cross':
-                ctx.beginPath();
-                const crossSize = size * 0.7;
-                ctx.fillRect(-crossSize/6, -crossSize/2, crossSize/3, crossSize);
-                ctx.fillRect(-crossSize/2, -crossSize/6, crossSize, crossSize/3);
+                const arm = shape.size * 0.3;
+                ctx.moveTo(-arm, -arm);
+                ctx.lineTo(arm, -arm);
+                ctx.lineTo(arm, arm);
+                ctx.lineTo(-arm, arm);
+                ctx.lineTo(-arm, -arm);
                 break;
             case 'heart':
-                ctx.beginPath();
-                ctx.moveTo(0, size/4);
+                const heartSize = shape.size * 0.8;
+                ctx.moveTo(0, heartSize * 0.3);
                 ctx.bezierCurveTo(
-                    size/2, -size/2,
-                    size, size/4,
-                    0, size
+                    heartSize * 0.5, heartSize * 0.3,
+                    heartSize * 0.5, -heartSize * 0.3,
+                    0, -heartSize * 0.3
                 );
                 ctx.bezierCurveTo(
-                    -size, size/4,
-                    -size/2, -size/2,
-                    0, size/4
+                    -heartSize * 0.5, -heartSize * 0.3,
+                    -heartSize * 0.5, heartSize * 0.3,
+                    0, heartSize * 0.3
                 );
                 break;
             case 'moon':
-                ctx.beginPath();
-                ctx.arc(0, 0, size, 0, Math.PI * 2);
-                ctx.arc(size/2, 0, size * 0.8, 0, Math.PI * 2);
+                const moonSize = shape.size * 0.8;
+                ctx.arc(0, 0, moonSize, 0, Math.PI * 2);
+                ctx.arc(moonSize * 0.3, 0, moonSize * 0.5, 0, Math.PI * 2, true);
                 break;
             case 'cloud':
-                ctx.beginPath();
-                ctx.arc(-size/2, 0, size/3, 0, Math.PI * 2);
-                ctx.arc(0, 0, size/2, 0, Math.PI * 2);
-                ctx.arc(size/2, 0, size/3, 0, Math.PI * 2);
-                ctx.arc(0, -size/3, size/3, 0, Math.PI * 2);
+                const cloudSize = shape.size * 0.8;
+                ctx.arc(-cloudSize * 0.3, 0, cloudSize * 0.3, 0, Math.PI * 2);
+                ctx.arc(cloudSize * 0.3, 0, cloudSize * 0.3, 0, Math.PI * 2);
+                ctx.arc(0, -cloudSize * 0.2, cloudSize * 0.3, 0, Math.PI * 2);
                 break;
             case 'lightning':
-                ctx.beginPath();
-                ctx.moveTo(0, -size);
-                ctx.lineTo(size/2, 0);
-                ctx.lineTo(-size/2, size/2);
-                ctx.lineTo(0, size);
-                ctx.lineTo(size/2, 0);
-                ctx.closePath();
+                const lightningSize = shape.size * 0.8;
+                ctx.moveTo(0, -lightningSize);
+                ctx.lineTo(lightningSize * 0.3, 0);
+                ctx.lineTo(-lightningSize * 0.3, lightningSize * 0.3);
+                ctx.lineTo(0, lightningSize);
+                ctx.lineTo(lightningSize * 0.3, 0);
                 break;
             case 'spiral':
-                ctx.beginPath();
+                const spiralSize = shape.size * 0.8;
                 for (let i = 0; i < 4; i++) {
-                    const angle = i * Math.PI * 2;
-                    const radius = size * (1 - i/4);
+                    const angle = i * Math.PI / 2;
+                    const radius = spiralSize * (1 - i * 0.2);
                     const x = Math.cos(angle) * radius;
                     const y = Math.sin(angle) * radius;
                     if (i === 0) ctx.moveTo(x, y);
@@ -622,6 +906,7 @@ export class GameEngine {
                 break;
         }
         
+        ctx.closePath();
         ctx.fill();
         ctx.restore();
     }
@@ -680,11 +965,224 @@ export class GameEngine {
         this.ctx.restore();
     }
 
+    drawPowerTimer() {
+        if (this.playerPower.active) {
+            const remainingTime = Math.max(0, this.playerPower.endTime - Date.now());
+            const progress = remainingTime / this.superPowers[this.playerPower.type].duration;
+            
+            // Draw power timer background
+            this.ctx.save();
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            this.ctx.fillRect(
+                this.powerTimer.x,
+                this.powerTimer.y,
+                this.powerTimer.width,
+                this.powerTimer.height
+            );
+
+            // Draw power timer progress
+            this.ctx.fillStyle = this.superPowers[this.playerPower.type].color;
+            this.ctx.fillRect(
+                this.powerTimer.x,
+                this.powerTimer.y,
+                this.powerTimer.width * progress,
+                this.powerTimer.height
+            );
+
+            // Draw remaining time in seconds
+            this.ctx.fillStyle = '#FFFFFF';
+            this.ctx.font = '16px Arial';
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(
+                `${Math.ceil(remainingTime / 1000)}s`,
+                this.powerTimer.x + this.powerTimer.width / 2,
+                this.powerTimer.y + this.powerTimer.height / 2
+            );
+
+            this.ctx.restore();
+        }
+    }
+
+    drawPowerLegend() {
+        if (!this.powerLegend.visible) return;
+
+        this.ctx.save();
+        
+        // Draw legend background with rounded corners
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.roundRect(
+            this.powerLegend.x,
+            this.powerLegend.y,
+            this.powerLegend.width,
+            this.powerLegend.height,
+            10
+        );
+        this.ctx.fill();
+
+        // Draw each power type
+        let yOffset = 15;
+        Object.entries(this.superPowers).forEach(([shape, power]) => {
+            // Draw color indicator
+            this.ctx.beginPath();
+            this.ctx.fillStyle = power.color;
+            this.ctx.arc(this.powerLegend.x + 15, this.powerLegend.y + yOffset, 6, 0, Math.PI * 2);
+            this.ctx.fill();
+
+            // Draw power name
+            this.ctx.fillStyle = '#FFFFFF';
+            this.ctx.font = '14px Arial';
+            this.ctx.fillText(
+                power.name,
+                this.powerLegend.x + 30,
+                this.powerLegend.y + yOffset + 4
+            );
+
+            yOffset += 20;
+        });
+
+        this.ctx.restore();
+    }
+
+    roundRect(x, y, width, height, radius) {
+        this.ctx.beginPath();
+        this.ctx.moveTo(x + radius, y);
+        this.ctx.lineTo(x + width - radius, y);
+        this.ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+        this.ctx.lineTo(x + width, y + height - radius);
+        this.ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+        this.ctx.lineTo(x + radius, y + height);
+        this.ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+        this.ctx.lineTo(x, y + radius);
+        this.ctx.quadraticCurveTo(x, y, x + radius, y);
+        this.ctx.closePath();
+    }
+
+    drawGameOverDisplay() {
+        if (!this.gameOverDisplay.visible) return;
+
+        // Check if display time has elapsed
+        if (Date.now() - this.gameOverDisplay.startTime >= this.gameOverDisplay.displayTime) {
+            this.gameOverDisplay.targetAlpha = 0;
+            if (this.gameOverDisplay.alpha <= 0) {
+                this.gameOverDisplay.visible = false;
+                return;
+            }
+        }
+
+        // Fade in/out effect
+        if (this.gameOverDisplay.alpha < this.gameOverDisplay.targetAlpha) {
+            this.gameOverDisplay.alpha = Math.min(
+                this.gameOverDisplay.alpha + this.gameOverDisplay.fadeSpeed,
+                this.gameOverDisplay.targetAlpha
+            );
+        } else if (this.gameOverDisplay.alpha > this.gameOverDisplay.targetAlpha) {
+            this.gameOverDisplay.alpha = Math.max(
+                this.gameOverDisplay.alpha - this.gameOverDisplay.fadeSpeed,
+                this.gameOverDisplay.targetAlpha
+            );
+        }
+
+        this.ctx.save();
+        
+        // Draw blur effect
+        this.ctx.filter = `blur(8px)`;
+        this.ctx.fillStyle = `rgba(0, 0, 0, ${this.gameOverDisplay.alpha * 0.3})`;
+        this.roundRect(
+            this.gameOverDisplay.x - this.gameOverDisplay.width / 2,
+            this.gameOverDisplay.y - this.gameOverDisplay.height / 2,
+            this.gameOverDisplay.width,
+            this.gameOverDisplay.height,
+            20
+        );
+        this.ctx.fill();
+        this.ctx.filter = 'none';
+
+        // Draw main background with gradient
+        const gradient = this.ctx.createLinearGradient(
+            this.gameOverDisplay.x - this.gameOverDisplay.width / 2,
+            this.gameOverDisplay.y - this.gameOverDisplay.height / 2,
+            this.gameOverDisplay.x + this.gameOverDisplay.width / 2,
+            this.gameOverDisplay.y + this.gameOverDisplay.height / 2
+        );
+        gradient.addColorStop(0, `rgba(0, 0, 0, ${this.gameOverDisplay.alpha * 0.5})`);
+        gradient.addColorStop(1, `rgba(0, 0, 0, ${this.gameOverDisplay.alpha * 0.3})`);
+        
+        this.ctx.fillStyle = gradient;
+        this.roundRect(
+            this.gameOverDisplay.x - this.gameOverDisplay.width / 2,
+            this.gameOverDisplay.y - this.gameOverDisplay.height / 2,
+            this.gameOverDisplay.width,
+            this.gameOverDisplay.height,
+            20
+        );
+        this.ctx.fill();
+
+        // Draw border glow
+        this.ctx.strokeStyle = `rgba(255, 255, 255, ${this.gameOverDisplay.alpha * 0.3})`;
+        this.ctx.lineWidth = 2;
+        this.roundRect(
+            this.gameOverDisplay.x - this.gameOverDisplay.width / 2,
+            this.gameOverDisplay.y - this.gameOverDisplay.height / 2,
+            this.gameOverDisplay.width,
+            this.gameOverDisplay.height,
+            20
+        );
+        this.ctx.stroke();
+
+        // Draw message with higher contrast and scale
+        this.ctx.fillStyle = `rgba(255, 255, 255, ${this.gameOverDisplay.alpha})`;
+        this.ctx.font = 'bold 48px Arial';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        
+        // Add text shadow for better visibility
+        this.ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+        this.ctx.shadowBlur = 10;
+        this.ctx.shadowOffsetX = 2;
+        this.ctx.shadowOffsetY = 2;
+
+        // Draw "Oops!" text with gradient
+        const textGradient = this.ctx.createLinearGradient(
+            this.gameOverDisplay.x - 100,
+            this.gameOverDisplay.y - 40,
+            this.gameOverDisplay.x + 100,
+            this.gameOverDisplay.y - 40
+        );
+        textGradient.addColorStop(0, `rgba(255, 255, 255, ${this.gameOverDisplay.alpha})`);
+        textGradient.addColorStop(0.5, `rgba(255, 255, 255, ${this.gameOverDisplay.alpha * 0.8})`);
+        textGradient.addColorStop(1, `rgba(255, 255, 255, ${this.gameOverDisplay.alpha})`);
+        
+        this.ctx.fillStyle = textGradient;
+        this.ctx.fillText(
+            'Oops!',
+            this.gameOverDisplay.x,
+            this.gameOverDisplay.y - 40
+        );
+
+        // Draw "You hit a shape!" with smaller font and glow
+        this.ctx.font = '32px Arial';
+        this.ctx.fillStyle = `rgba(255, 255, 255, ${this.gameOverDisplay.alpha * 0.8})`;
+        this.ctx.fillText(
+            'You hit a shape!',
+            this.gameOverDisplay.x,
+            this.gameOverDisplay.y + 20
+        );
+
+        // Reset shadow
+        this.ctx.shadowColor = 'transparent';
+        this.ctx.shadowBlur = 0;
+        this.ctx.shadowOffsetX = 0;
+        this.ctx.shadowOffsetY = 0;
+
+        this.ctx.restore();
+    }
+
     draw() {
         // Clear canvas
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        // Draw entrance protection zone (subtle visual indicator)
+        // Draw entrance protection zone
         this.ctx.save();
         this.ctx.globalAlpha = 0.05;
         this.ctx.fillStyle = '#87CEEB';
@@ -742,6 +1240,15 @@ export class GameEngine {
             this.ctx.arc(this.player.x, this.player.y, this.player.radius, 0, Math.PI * 2);
             this.ctx.stroke();
         }
+
+        // Draw power legend
+        this.drawPowerLegend();
+
+        // Draw power timer
+        this.drawPowerTimer();
+
+        // Draw game over display
+        this.drawGameOverDisplay();
     }
 
     mixColors(color1, color2, ratio) {
@@ -782,7 +1289,7 @@ export class GameEngine {
     }
 
     update() {
-        if (!this.gameOver && !this.success) {
+        if (!this.success) {
             this.updatePlayer();
             this.updateObstacles();
             this.updateParticles();
@@ -794,6 +1301,9 @@ export class GameEngine {
         window.removeEventListener('keyup', this.keys);
         this.canvas.removeEventListener('touchstart', this.touchX);
         this.canvas.removeEventListener('touchmove', this.touchY);
+        if (this.playerPower.timer) {
+            clearInterval(this.playerPower.timer);
+        }
     }
 
     handleObstacleCollision(obstacle1, obstacle2) {
@@ -835,6 +1345,33 @@ export class GameEngine {
                 obstacle2.x += separationX;
                 obstacle2.y += separationY;
             }
+        }
+    }
+
+    activatePlayerPower(powerType) {
+        this.playerPower.active = true;
+        this.playerPower.type = powerType;
+        this.playerPower.hasPower = true;
+        this.playerPower.endTime = Date.now() + this.superPowers[powerType].duration;
+        
+        // Start power timer
+        if (this.playerPower.timer) {
+            clearInterval(this.playerPower.timer);
+        }
+        this.playerPower.timer = setInterval(() => {
+            if (Date.now() >= this.playerPower.endTime) {
+                this.deactivatePlayerPower();
+            }
+        }, 100);
+    }
+
+    deactivatePlayerPower() {
+        this.playerPower.active = false;
+        this.playerPower.type = null;
+        this.playerPower.hasPower = false;
+        if (this.playerPower.timer) {
+            clearInterval(this.playerPower.timer);
+            this.playerPower.timer = null;
         }
     }
 } 
